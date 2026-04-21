@@ -1,13 +1,13 @@
-const express      = require("express");
-const multer       = require("multer");
-const path         = require("path");
-const axios        = require("axios");
-const FormData     = require("form-data");
-const fs           = require("fs");
-const Message      = require("../models/schema_messages");
-const Response     = require("../models/schema_responses");
+const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const axios = require("axios");
+const FormData = require("form-data");
+const fs = require("fs");
+const Message = require("../models/schema_messages");
+const Response = require("../models/schema_responses");
 const Conversation = require("../models/schema_conversations");
-const Child        = require("../models/schema_children");
+const Child = require("../models/schema_children");
 const { protect, approved } = require("../middleware/auth");
 
 const router = express.Router();
@@ -17,7 +17,7 @@ const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 // ── Upload média ──────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
   destination: "uploads/chat/",
-  filename   : (_, file, cb) =>
+  filename: (_, file, cb) =>
     cb(null, `media_${Date.now()}${path.extname(file.originalname)}`),
 });
 const upload = multer({
@@ -36,7 +36,7 @@ router.get("/:convId", protect, approved, async (req, res) => {
   try {
     // Vérifier appartenance de la conversation
     const conv = await Conversation.findOne({
-      _id   : req.params.convId,
+      _id: req.params.convId,
       userId: req.user._id,
     });
     if (!conv) return res.status(404).json({ message: "Conversation introuvable" });
@@ -50,9 +50,9 @@ router.get("/:convId", protect, approved, async (req, res) => {
       .limit(Number(limit));
 
     // Joindre les réponses IA aux messages assistant
-    const msgIds   = messages.map(m => m._id);
+    const msgIds = messages.map(m => m._id);
     const responses = await Response.find({ messageId: { $in: msgIds } });
-    const respMap  = {};
+    const respMap = {};
     responses.forEach(r => { respMap[r.messageId.toString()] = r; });
 
     const result = messages.map(m => ({
@@ -89,75 +89,125 @@ router.post("/:convId", protect, approved, async (req, res) => {
     // 1. Sauvegarder le message parent
     const userMsg = await Message.create({
       conversationId: conv._id,
-      role          : "user",
-      message       : message.trim(),
+      role: "user",
+      message: message.trim(),
       sentAt,
-      deliveredAt   : new Date(),
+      deliveredAt: new Date(),
     });
+
+    // Récupérer les 3 derniers messages (ordre chronologique)
+    const lastMessages = await Message.find({ conversationId: conv._id })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .lean();
+
+    // Remettre dans l'ordre ancien → récent
+    lastMessages.reverse();
+
+    // Récupérer les réponses associées
+    const messageIds = lastMessages.map(m => m._id);
+
+    const responses = await Response.find({ messageId: { $in: messageIds } })
+      .limit(3)
+      .lean();
+
+    // Mapper messageId → réponse
+    const responseMap = {};
+    responses.forEach(r => {
+      responseMap[r.messageId.toString()] = r.reponse;
+    });
+
+    // Construire le format final
+    let formatted = [];
+
+    lastMessages.forEach(m => {
+      formatted.push({ role: 'user', content: m.message });
+
+      if (responseMap[m._id.toString()]) {
+        formatted.push({ role: 'assistant', content: responseMap[m._id.toString()] });
+      }
+    });
+
+    // Résultat final
+    const lastConversation = formatted.join("\n");
+    console.log(lastConversation);
 
     // 2. Appeler le pipeline IA Python
     const startRag = Date.now();
     const pyRes = await axios.post(`${PYTHON_API}/chat`, {
-      question       : message,
-      profil         : child.prediction || "inconnu",
-      profile_detecter: child.profileDetected || [],
-      conversation   : conv.resume || "",
-      mots_cles      : conv.motsCles || [],
-      child          : {
-        firstName : child.firstName,
+      question: message,
+
+      profile: {
         prediction: child.prediction,
-        A1: child.A1, A2: child.A2, A3: child.A3, A4: child.A4, A5: child.A5,
-        A6: child.A6, A7: child.A7, A8: child.A8, A9: child.A9, A10: child.A10,
+        Age_Years: new Date().getFullYear() - child.birthDate.getFullYear(),
+        Sex: child.gender,
+        A1: child.A1, A2: child.A2, A3: child.A3,
+        A4: child.A4, A5: child.A5, A6: child.A6,
+        A7: child.A7, A8: child.A8, A9: child.A9, A10: child.A10,
+
+        // RM features si tu veux enrichir le RAG
+        PR_QF1A: child.PR_QF1A,
+        PR_QO1_A_COMBINE: child.PR_QO1_A_COMBINE,
+        PR_QO1_C_COMBINE: child.PR_QO1_C_COMBINE,
+        PR_QO1_E_COMBINE: child.PR_QO1_E_COMBINE,
+        PR_QN1_G: child.PR_QN1_G,
+        PR_QK1: child.PR_QK1,
+        PR_QQ: child.PR_QQ,
       },
-      language: language || req.user.language || "fr",
+
+      conversation: {
+        last_5_messages: formatted || [], // ⚠️ IMPORTANT (format list)
+        summary: conv.resume || "",
+        keywords: conv.motsCles || [],
+        total_messages: conv.totalMessages || 0,
+      },
+
+      child: {
+        id: child._id,
+        profile_detecter: child.profileDetected || [],
+      }
     });
 
-    const ragDuration   = Date.now() - startRag;
+    const ragDuration = Date.now() - startRag;
     const totalDuration = Date.now() - startTotal;
-    const pyData        = pyRes.data;
+    const pyData = pyRes.data;
+    console.log(pyData);
 
-    // 3. Sauvegarder le message assistant
-    const assistantMsg = await Message.create({
-      conversationId: conv._id,
-      role          : "assistant",
-      message       : pyData.response || "",
-      sentAt        : new Date(),
-      deliveredAt   : new Date(),
-      processingMs  : totalDuration,
-    });
+    // FIX : extraire aux deux niveaux
+    const { profileDetected, resume, motsCles, reponse } = extractPythonUpdates(pyData);
 
     // 4. Sauvegarder la réponse complète
     const response = await Response.create({
-      messageId      : assistantMsg._id,
-      reponse        : pyData.response || "",
-      score          : pyData.score ?? null,
-      webUsed        : pyData.web_used ?? false,
-      sources        : pyData.sources ?? [],
-      lang           : pyData.language || "fr",
-      generatedAt    : new Date(),
-      ragDurationMs  : ragDuration,
-      llmDurationMs  : pyData.llm_duration_ms ?? null,
+      messageId: userMsg._id,
+      reponse: pyData.answer || "",
+      score: pyData.rag_score ?? null,
+      webUsed: pyData.web_triggered ?? false,
+      sources: pyData.sources ?? [],
+      lang: pyData.parent_lang || "fr",
+      generatedAt: new Date(),
+      ragDurationMs: ragDuration,
+      llmDurationMs: pyData.llm_duration_ms ?? null,
       totalDurationMs: totalDuration,
     });
 
-    // 5. Mettre à jour mémoire de la conversation
-    await Conversation.findByIdAndUpdate(conv._id, {
-      resume        : pyData.resume || conv.resume,
-      motsCles      : pyData.mots_cles || conv.motsCles,
-      $inc          : { totalMessages: 2 },
-    });
+    // FIX : même logique de sauvegarde
+    const convUpdate = { $inc: { totalMessages: 2 } };
+    if (resume) convUpdate.resume = resume;
+    if (motsCles?.length) convUpdate.motsCles = motsCles;
+    await Conversation.findByIdAndUpdate(conv._id, convUpdate);
 
-    // 6. Mettre à jour profile_detecter de l'enfant si changement détecté
-    if (pyData.profile_detecter?.length) {
-      await Child.findByIdAndUpdate(child._id, {
-        profileDetected: pyData.profile_detecter,
-      });
+    if (profileDetected?.length) {
+      await Child.findByIdAndUpdate(child._id, { profileDetected });
     }
 
     res.status(201).json({
-      userMessage     : userMsg,
-      assistantMessage: assistantMsg,
-      response,
+      message: userMsg,
+      response: {
+        _id: response._id,
+        role: "assistant",
+        message: response.reponse, // ⚠️ IMPORTANT
+        sentAt: new Date(),
+      },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -173,7 +223,7 @@ router.post(
   upload.single("media"),
   async (req, res) => {
     const startTotal = Date.now();
-    let   mediaPath  = null;
+    let mediaPath = null;
 
     try {
       const conv = await Conversation.findOne({
@@ -187,78 +237,118 @@ router.post(
       const child = await Child.findById(conv.childId);
 
       // Déterminer le type de fichier
-      const ext      = path.extname(req.file.originalname).toLowerCase();
-      const isAudio  = /mp3|wav|ogg|webm/.test(ext);
-      const isVideo  = /mp4|avi|mov/.test(ext);
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const isAudio = /mp3|wav|ogg|webm/.test(ext);
+      const isVideo = /mp4|avi|mov/.test(ext);
       const fileType = isAudio ? "audio" : isVideo ? "video" : "image";
 
       // Envoyer le fichier au pipeline Python
       const form = new FormData();
-      form.append("file",     fs.createReadStream(mediaPath));
+
+      // ✅ fichier (respecter audio OU media)
+      if (isAudio) {
+        form.append("audio", fs.createReadStream(mediaPath));
+      } else {
+        form.append("media", fs.createReadStream(mediaPath));
+      }
+
+      // ✅ texte
       form.append("question", req.body.message || "");
-      form.append("profil",   child.prediction || "inconnu");
-      form.append("profile_detecter", JSON.stringify(child.profileDetected || []));
-      form.append("conversation",     conv.resume || "");
-      form.append("language",         req.body.language || req.user.language || "fr");
-      form.append("child",            JSON.stringify({
-        firstName : child.firstName,
+
+      // ✅ profile → JSON STRING
+      form.append("profile", JSON.stringify({
+        prediction: child.prediction || "inconnu"
+      }));
+
+      // ✅ conversation → JSON STRING
+      form.append("conversation", JSON.stringify({
+        last_5_messages: [], // (ou ton historique formaté)
+        summary: conv.resume || "",
+        keywords: conv.motsCles || [],
+        total_messages: conv.totalMessages || 0
+      }));
+
+      // ✅ child → JSON STRING
+      form.append("child", JSON.stringify({
+        child: {
+          id: child._id,
+          profile_detecter: child.profileDetected || [],
+        },
         prediction: child.prediction,
       }));
 
       const startRag = Date.now();
-      const pyRes    = await axios.post(`${PYTHON_API}/chat/media`, form, {
+      const pyRes = await axios.post(`${PYTHON_API}/chat/media`, form, {
         headers: form.getHeaders(),
       });
 
-      const ragDuration   = Date.now() - startRag;
+      const ragDuration = Date.now() - startRag;
       const totalDuration = Date.now() - startTotal;
-      const pyData        = pyRes.data;
+      const pyData = pyRes.data;
+      const { profileDetected, resume, motsCles, reponse } = extractPythonUpdates(pyData);
 
       // Sauvegarder message parent (avec fichier)
       const userMsg = await Message.create({
         conversationId: conv._id,
-        role          : "user",
-        message       : req.body.message || "",
-        fileUrl       : mediaPath,
+        role: "user",
+        message: req.body.message || "",
+        fileUrl: mediaPath,
         fileType,
-        isVoice       : isAudio,
-        sentAt        : new Date(),
-        deliveredAt   : new Date(),
+        isVoice: isAudio,
+        sentAt: new Date(),
+        deliveredAt: new Date(),
       });
 
-      // Sauvegarder message assistant
-      const assistantMsg = await Message.create({
-        conversationId: conv._id,
-        role          : "assistant",
-        message       : pyData.response || "",
-        sentAt        : new Date(),
-        deliveredAt   : new Date(),
-        processingMs  : totalDuration,
-      });
+      // FIX : même logique de sauvegarde
+      const convUpdate = { $inc: { totalMessages: 2 } };
+      if (resume) convUpdate.resume = resume;
+      if (motsCles?.length) convUpdate.motsCles = motsCles;
+      await Conversation.findByIdAndUpdate(conv._id, convUpdate);
+
+      if (profileDetected?.length) {
+        await Child.findByIdAndUpdate(child._id, { profileDetected });
+      }
+      // // Sauvegarder message assistant
+      // const assistantMsg = await Message.create({
+      //   conversationId: conv._id,
+      //   role: "assistant",
+      //   message: pyData.response || "",
+      //   sentAt: new Date(),
+      //   deliveredAt: new Date(),
+      //   processingMs: totalDuration,
+      // });
 
       // Sauvegarder réponse
       const response = await Response.create({
-        messageId      : assistantMsg._id,
-        reponse        : pyData.response || "",
-        score          : pyData.score ?? null,
-        webUsed        : pyData.web_used ?? false,
-        sources        : pyData.sources ?? [],
-        lang           : pyData.language || "fr",
-        generatedAt    : new Date(),
-        ragDurationMs  : ragDuration,
-        llmDurationMs  : pyData.llm_duration_ms ?? null,
+        messageId: userMsg._id,
+        reponse: pyData.answer || "",
+        score: pyData.rag_score ?? null,
+        webUsed: pyData.web_triggered ?? false,
+        sources: pyData.sources ?? [],
+        lang: pyData.parent_lang || "fr",
+        generatedAt: new Date(),
+        ragDurationMs: ragDuration,
+        llmDurationMs: pyData.llm_duration_ms ?? null,
         totalDurationMs: totalDuration,
       });
 
       await Conversation.findByIdAndUpdate(conv._id, {
-        resume  : pyData.resume || conv.resume,
+        resume: pyData.resume || conv.resume,
         motsCles: pyData.mots_cles || conv.motsCles,
-        $inc    : { totalMessages: 2 },
+        $inc: { totalMessages: 2 },
       });
 
-      res.status(201).json({ userMessage: userMsg, assistantMessage: assistantMsg, response });
+      res.status(201).json({
+        message: userMsg,
+        response: {
+          _id: response._id,
+          role: "assistant",
+          message: response.reponse, // ⚠️ IMPORTANT
+          sentAt: new Date(),
+        },
+      });
     } catch (err) {
-      if (mediaPath) fs.unlink(mediaPath, () => {});
+      if (mediaPath) fs.unlink(mediaPath, () => { });
       res.status(500).json({ message: err.message });
     }
   }
@@ -303,5 +393,35 @@ router.delete("/:msgId", protect, approved, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Helper — Extraire les valeurs Python en lisant racine ET updates
+// CORRECTION BUG 3 : Python peut retourner les données aux deux niveaux
+// ─────────────────────────────────────────────────────────────────
+function extractPythonUpdates(pyData) {
+  const updates = pyData.updates || {};
+
+  // FIX BUG 1 : lire profile_detecter au niveau racine d'abord
+  const profileDetected =
+    (pyData.profile_detecter?.length ? pyData.profile_detecter : null) ||
+    (updates.profile_detecter?.length ? updates.profile_detecter : null) ||
+    null;
+
+  // FIX BUG 2 : lire resume/keywords aux deux niveaux
+  const resume =
+    (typeof pyData.resume === "string" && pyData.resume.trim() ? pyData.resume : null) ||
+    (typeof updates.summary === "string" && updates.summary.trim() ? updates.summary : null) ||
+    null;
+
+  const motsCles =
+    (pyData.mots_cles?.length ? pyData.mots_cles : null) ||
+    (updates.keywords?.length ? updates.keywords : null) ||
+    null;
+
+  // La réponse texte peut être dans answer (nouveau pipeline) ou response (legacy)
+  const reponse = pyData.answer || pyData.response || "";
+
+  return { profileDetected, resume, motsCles, reponse };
+}
 
 module.exports = router;

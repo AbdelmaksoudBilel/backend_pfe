@@ -188,23 +188,26 @@ router.post("/", protect, adminOnly, async (req, res) => {
 // =============================================================================
 router.post("/from-form/:childId", protect, adminOnly, async (req, res) => {
   try {
+    console.log("debut de from-from");
     const child = await Child.findById(req.params.childId);
+    console.log(child);
     if (!child) return res.status(404).json({ message: "Enfant introuvable" });
 
-    // Appeler Python pour générer le JSON évaluation depuis le formulaire
-    const pyRes = await axios.post(`${PYTHON_API}/evaluation/prefill`, {
-      child_form: {
-        A1: child.A1, A2: child.A2, A3: child.A3, A4: child.A4,
-        A5: child.A5, A6: child.A6, A7: child.A7, A8: child.A8,
-        A9: child.A9, A10: child.A10,
-        PR_QH1A: child.PR_QH1A, PR_QH1B: child.PR_QH1B,
-        PR_QK1 : child.PR_QK1,  PR_QF1A: child.PR_QF1A,
-        PR_QO1_A_COMBINE: child.PR_QO1_A_COMBINE,
-      },
-      profile_detecter: child.profileDetected || [],
-    });
-
-    const evalJson = pyRes.data.eval_json || {};
+    // // Appeler Python pour générer le JSON évaluation depuis le formulaire
+    // const pyRes = await axios.post(`${PYTHON_API}/evaluation/prefill`, {
+    //   child_form: {
+    //     A1: child.A1, A2: child.A2, A3: child.A3, A4: child.A4,
+    //     A5: child.A5, A6: child.A6, A7: child.A7, A8: child.A8,
+    //     A9: child.A9, A10: child.A10,
+    //     PR_QH1A: child.PR_QH1A, PR_QH1B: child.PR_QH1B,
+    //     PR_QK1 : child.PR_QK1,  PR_QF1A: child.PR_QF1A,
+    //     PR_QO1_A_COMBINE: child.PR_QO1_A_COMBINE,
+    //   },
+    //   profile_detecter: child.profileDetected || [],
+    // });
+    // console.log(pyRes);
+    
+    // const evalJson = pyRes.data.eval_json || {};
 
     // Charger templates pour la correspondance slug → meta
     const templates = await EvaluationTemplate.find({ isActive: true });
@@ -218,8 +221,11 @@ router.post("/from-form/:childId", protect, adminOnly, async (req, res) => {
       });
     });
 
+    const evalJson = await EvaluationResponse.find({ childId: child._id, source: "form_parent" });
+    console.log(evalJson);
+    
     // Construire les réponses (uniquement les slugs avec valeur 0 ou 1)
-    const rawResponses = Object.entries(evalJson)
+    const rawResponses = Object.entries(evalJson || {})
       .filter(([, v]) => v === 0 || v === 1)
       .map(([slug, answer]) => {
         const meta = slugMap[slug] || {};

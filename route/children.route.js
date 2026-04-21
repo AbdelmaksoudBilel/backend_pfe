@@ -85,7 +85,7 @@ function parseFormToChild(body) {
     PR_QJ1: toNum(body.PR_QJ1),
     PR_QK1: toNum(body.PR_QK1),
     PR_QQ: toNum(body.PR_QQ),
-    PR_QN1_A: toNum(body.PR_QN1_A),
+    PR_QN1_A: toNum(body.PR_QN1_A || 0),
     PR_QN1_B: toNum(body.PR_QN1_B),
     PR_QN1_C: toNum(body.PR_QN1_C),
     PR_QN1_D: toNum(body.PR_QN1_D),
@@ -102,6 +102,19 @@ function parseFormToChild(body) {
     isFormComplete: true,
   };
 }
+
+// =============================================================================
+// ADMIN — GET /api/children/all  ─  Tous les enfants (admin uniquement)
+// =============================================================================
+router.get("/all", protect, adminOnly, async (req, res) => {
+  try {
+    const children = await Child.find().populate("userId", "firstName lastName email").sort("-createdAt");
+    res.json(children);
+  } catch (err) {
+    console.log(err.response?.data);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // =============================================================================
 // POST /api/children  ─  Créer un enfant (avec photo multer)
@@ -139,6 +152,7 @@ router.post("/", protect, upload.single("facePhoto"), async (req, res) => {
 router.get("/", protect, async (req, res) => {
   try {
     const children = await Child.find({ userId: req.user._id }).sort("-createdAt");
+    console.log(children);
     res.json(children);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -165,7 +179,7 @@ router.put("/:id", protect, upload.single("facePhoto"), async (req, res) => {
   try {
     const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
-
+    
     const updates = parseFormToChild(req.body);
     if (req.file) {
       // Supprimer ancienne photo si elle existe
@@ -175,7 +189,7 @@ router.put("/:id", protect, upload.single("facePhoto"), async (req, res) => {
       updates.facePhotoPath = req.file.path;
       updates.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
     }
-
+    
     const updated = await Child.findByIdAndUpdate(req.params.id, updates, { new: true });
     res.json(updated);
   } catch (err) {
@@ -191,15 +205,15 @@ router.put("/:id/photo", protect, upload.single("facePhoto"), async (req, res) =
     const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     if (!req.file) return res.status(400).json({ message: "Aucune photo fournie" });
-
+    
     if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
       fs.unlinkSync(child.facePhotoPath);
     }
-
+    
     child.facePhotoPath = req.file.path;
     child.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
     await child.save();
-
+    
     res.json({ facePhotoUrl: child.facePhotoUrl });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -213,7 +227,7 @@ router.get("/:id/predict", protect, async (req, res) => {
   try {
     const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
-
+    
     const result = await triggerPrediction(child._id);
     res.json(result);
   } catch (err) {
@@ -228,7 +242,7 @@ router.get("/:id/predict", protect, async (req, res) => {
 // =============================================================================
 router.delete("/:id", protect, async (req, res) => {
   try {
-    const child = await Child.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+    const child = await Child.findOneAndDelete({ _id: req.params.id});
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     // Supprimer la photo de visage si elle existe
     if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
@@ -240,17 +254,6 @@ router.delete("/:id", protect, async (req, res) => {
   }
 });
 
-// =============================================================================
-// ADMIN — GET /api/children/all  ─  Tous les enfants (admin uniquement)
-// =============================================================================
-router.get("/all", protect, adminOnly, async (req, res) => {
-  try {
-    const children = await Child.find().populate("userId", "firstName lastName email").sort("-createdAt");
-    res.json(children);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
 
 // ── Fonction interne de prédiction ────────────────────────────────
 async function triggerPrediction(childId) {
