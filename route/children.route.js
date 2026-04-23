@@ -177,10 +177,14 @@ router.get("/:id", protect, async (req, res) => {
 // =============================================================================
 router.put("/:id", protect, upload.single("facePhoto"), async (req, res) => {
   try {
-    const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
+    const child = await Child.findOne({ _id: req.params.id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
+
+    const updates = parseFormToChild({
+      ...child.toObject(),
+      ...req.body
+    });
     
-    const updates = parseFormToChild(req.body);
     if (req.file) {
       // Supprimer ancienne photo si elle existe
       if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
@@ -189,7 +193,7 @@ router.put("/:id", protect, upload.single("facePhoto"), async (req, res) => {
       updates.facePhotoPath = req.file.path;
       updates.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
     }
-    
+
     const updated = await Child.findByIdAndUpdate(req.params.id, updates, { new: true });
     res.json(updated);
   } catch (err) {
@@ -205,15 +209,15 @@ router.put("/:id/photo", protect, upload.single("facePhoto"), async (req, res) =
     const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     if (!req.file) return res.status(400).json({ message: "Aucune photo fournie" });
-    
+
     if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
       fs.unlinkSync(child.facePhotoPath);
     }
-    
+
     child.facePhotoPath = req.file.path;
     child.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
     await child.save();
-    
+
     res.json({ facePhotoUrl: child.facePhotoUrl });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -227,7 +231,7 @@ router.get("/:id/predict", protect, async (req, res) => {
   try {
     const child = await Child.findOne({ _id: req.params.id, userId: req.user._id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
-    
+
     const result = await triggerPrediction(child._id);
     res.json(result);
   } catch (err) {
@@ -242,7 +246,7 @@ router.get("/:id/predict", protect, async (req, res) => {
 // =============================================================================
 router.delete("/:id", protect, async (req, res) => {
   try {
-    const child = await Child.findOneAndDelete({ _id: req.params.id});
+    const child = await Child.findOneAndDelete({ _id: req.params.id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     // Supprimer la photo de visage si elle existe
     if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {

@@ -245,6 +245,39 @@ router.post(
       // Envoyer le fichier au pipeline Python
       const form = new FormData();
 
+      // Récupérer les 3 derniers messages (ordre chronologique)
+      const lastMessages = await Message.find({ conversationId: conv._id })
+        .sort({ createdAt: -1 })
+        .limit(3)
+        .lean();
+
+      // Remettre dans l'ordre ancien → récent
+      lastMessages.reverse();
+
+      // Récupérer les réponses associées
+      const messageIds = lastMessages.map(m => m._id);
+
+      const responses = await Response.find({ messageId: { $in: messageIds } })
+        .limit(3)
+        .lean();
+
+      // Mapper messageId → réponse
+      const responseMap = {};
+      responses.forEach(r => {
+        responseMap[r.messageId.toString()] = r.reponse;
+      });
+
+      // Construire le format final
+      let formatted = [];
+
+      lastMessages.forEach(m => {
+        formatted.push({ role: 'user', content: m.message });
+
+        if (responseMap[m._id.toString()]) {
+          formatted.push({ role: 'assistant', content: responseMap[m._id.toString()] });
+        }
+      });
+      
       // ✅ fichier (respecter audio OU media)
       if (isAudio) {
         form.append("audio", fs.createReadStream(mediaPath));
@@ -262,7 +295,7 @@ router.post(
 
       // ✅ conversation → JSON STRING
       form.append("conversation", JSON.stringify({
-        last_5_messages: [], // (ou ton historique formaté)
+        last_5_messages: formatted || [], // (ou ton historique formaté)
         summary: conv.resume || "",
         keywords: conv.motsCles || [],
         total_messages: conv.totalMessages || 0

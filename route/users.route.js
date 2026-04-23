@@ -30,9 +30,28 @@ router.put("/me", protect, async (req, res) => {
         const allowed = ["firstName", "lastName", "phone", "language"];
         const updates = {};
         allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
-
+        
         const user = await User.findByIdAndUpdate(
             req.user._id,
+            updates,
+            { new: true, runValidators: true }
+        ).select("-password");
+
+        res.json(user);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// PUT /api/users/ID  →  modifier firstName, lastName, phone, language
+router.put("/:id", protect, async (req, res) => {
+    try {
+        const allowed = ["firstName", "lastName", "phone", "language"];
+        const updates = {};
+        allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+
+        const user = await User.findByIdAndUpdate(
+            req.params.id,
             updates,
             { new: true, runValidators: true }
         ).select("-password");
