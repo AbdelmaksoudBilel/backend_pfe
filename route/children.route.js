@@ -85,7 +85,7 @@ function parseFormToChild(body) {
     PR_QJ1: toNum(body.PR_QJ1),
     PR_QK1: toNum(body.PR_QK1),
     PR_QQ: toNum(body.PR_QQ),
-    PR_QN1_A: toNum(body.PR_QN1_A || 0),
+    PR_QN1_A: toNum(body.PR_QN1_A || 1),
     PR_QN1_B: toNum(body.PR_QN1_B),
     PR_QN1_C: toNum(body.PR_QN1_C),
     PR_QN1_D: toNum(body.PR_QN1_D),
@@ -353,10 +353,12 @@ async function triggerPrediction(childId) {
   const probTsa = result.prob_tsa ?? null;
   const probCnn = result.prob_cnn ?? null;
   const scoreRm = result.score_anomalie ?? null;
+  const PR_QN1_A = 1;
 
   let prediction = "Normal";
   if (probTsa !== null && probTsa >= 0.5 && (scoreRm === null || scoreRm < 0.5)) {
     prediction = "TSA";
+    PR_QN1_A = 2;
   } else if (scoreRm !== null && scoreRm >= 0.5 && (probTsa === null || probTsa < 0.5)) {
     prediction = "RM";
   } else if (probTsa !== null && probTsa >= 0.5 && scoreRm !== null && scoreRm >= 0.5) {
@@ -365,6 +367,7 @@ async function triggerPrediction(childId) {
 
   const updates = {
     probMl: result.prob_ml ?? null,
+    PR_QN1_A: PR_QN1_A,
     probCnn: probCnn,
     probTsa: probTsa,
     scoreAnomalie: scoreRm,
