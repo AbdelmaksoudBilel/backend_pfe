@@ -353,7 +353,7 @@ async function triggerPrediction(childId) {
   const probTsa = result.prob_tsa ?? null;
   const probCnn = result.prob_cnn ?? null;
   const scoreRm = result.score_anomalie ?? null;
-  const PR_QN1_A = 1;
+  let PR_QN1_A = 1;
 
   let prediction = "Normal";
   if (probTsa !== null && probTsa >= 0.5 && (scoreRm === null || scoreRm < 0.5)) {
