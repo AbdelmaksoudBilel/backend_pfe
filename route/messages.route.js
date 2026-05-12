@@ -9,25 +9,36 @@ const Response = require("../models/schema_responses");
 const Conversation = require("../models/schema_conversations");
 const Child = require("../models/schema_children");
 const { protect, approved } = require("../middleware/auth");
-
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const cloudinary = require('cloudinary').v2;
 const router = express.Router();
 
 const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 
-// ── Upload média ──────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: "uploads/chat/",
-  filename: (_, file, cb) =>
-    cb(null, `media_${Date.now()}${path.extname(file.originalname)}`),
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_NAME,
+  api_key: process.env.CLOUDINARY_KEY,
+  api_secret: process.env.CLOUDINARY_SECRET
 });
-const upload = multer({
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 },  // 50MB
-  fileFilter: (_, file, cb) => {
-    const allowed = /jpeg|jpg|png|gif|webp|mp4|avi|mov|mp3|wav|ogg|webm/;
-    cb(null, allowed.test(path.extname(file.originalname).toLowerCase()));
+
+// ── Upload média ──────────────────────────────────────────────────────────────
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    // Détection dynamique du type de ressource
+    const isVideo = file.mimetype.startsWith('video');
+    const isAudio = file.mimetype.startsWith('audio');
+
+    return {
+      folder: 'Uploads/Messages',
+      // CRITIQUE : 'video' est requis pour les vidéos ET les audios chez Cloudinary
+      resource_type: (isVideo || isAudio) ? 'video' : 'image',
+      allowed_formats: ['jpg', 'png', 'mp4', 'mov', 'mp3', 'wav', 'ogg'],
+    };
   },
 });
+
+const upload = multer({ storage });
 
 // =============================================================================
 // GET /api/messages/:convId  →  historique d'une conversation
@@ -130,7 +141,7 @@ router.post("/:convId", protect, approved, async (req, res) => {
 
     // Résultat final
     const lastConversation = formatted.join("\n");
-    console.log(lastConversation);
+    console.log("lastConversation");
 
     // 2. Appeler le pipeline IA Python
     const startRag = Date.now();
@@ -171,7 +182,7 @@ router.post("/:convId", protect, approved, async (req, res) => {
     const ragDuration = Date.now() - startRag;
     const totalDuration = Date.now() - startTotal;
     const pyData = pyRes.data;
-    console.log(pyData);
+    console.log("pyData");
 
     // FIX : extraire aux deux niveaux
     const { profileDetected, resume, motsCles, reponse } = extractPythonUpdates(pyData);
@@ -211,6 +222,7 @@ router.post("/:convId", protect, approved, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
+    console.log(err.message);
   }
 });
 
@@ -224,7 +236,7 @@ router.post(
   async (req, res) => {
     const startTotal = Date.now();
     let mediaPath = null;
-
+    console.log("start");
     try {
       const conv = await Conversation.findOne({
         _id: req.params.convId, userId: req.user._id,
@@ -232,15 +244,21 @@ router.post(
       if (!conv) return res.status(404).json({ message: "Conversation introuvable" });
 
       if (!req.file) return res.status(400).json({ message: "Fichier manquant" });
+      console.log("mediaPath:", req.file.path);
 
+      // Avec Cloudinary, l'URL complète est dans path
       mediaPath = req.file.path;
-      const child = await Child.findById(conv.childId);
 
-      // Déterminer le type de fichier
-      const ext = path.extname(req.file.originalname).toLowerCase();
-      const isAudio = /mp3|wav|ogg|webm/.test(ext);
-      const isVideo = /mp4|avi|mov/.test(ext);
-      const fileType = isAudio ? "audio" : isVideo ? "video" : "image";
+      // Pour la suppression future, on peut stocker l'ID public
+      const mediaPublicId = req.file.filename;
+
+      // Déterminer le type de fichier de manière plus fiable avec le mimetype
+      const mime = req.file.mimetype;
+      let fileType = "image"; // par défaut
+      if (mime.startsWith("audio")) fileType = "audio";
+      else if (mime.startsWith("video")) fileType = "video";
+
+      const child = await Child.findById(conv.childId);
 
       // Envoyer le fichier au pipeline Python
       const form = new FormData();
@@ -277,13 +295,10 @@ router.post(
           formatted.push({ role: 'assistant', content: responseMap[m._id.toString()] });
         }
       });
-      
+
       // ✅ fichier (respecter audio OU media)
-      if (isAudio) {
-        form.append("audio", fs.createReadStream(mediaPath));
-      } else {
-        form.append("media", fs.createReadStream(mediaPath));
-      }
+
+      form.append("media_url", mediaPath);
 
       // ✅ texte
       form.append("question", req.body.message || "");
@@ -327,7 +342,7 @@ router.post(
         message: req.body.message || "",
         fileUrl: mediaPath,
         fileType,
-        isVoice: isAudio,
+        isVoice: false,
         sentAt: new Date(),
         deliveredAt: new Date(),
       });
@@ -382,7 +397,7 @@ router.post(
       });
     } catch (err) {
       if (mediaPath) fs.unlink(mediaPath, () => { });
-      res.status(500).json({ message: err.message });
+      res.status(500).json({ message: err.message, mediaPath });
     }
   }
 );

@@ -11,31 +11,29 @@ const fs = require("fs");
 const axios = require("axios");
 const Child = require("../models/schema_children");
 const { protect, adminOnly } = require("../middleware/auth");
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+// const cloudinary1 = require('../middleware/cloudinary');
 
 const router = express.Router();
 const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_NAME,
+  api_key: process.env.CLOUDINARY_KEY,
+  api_secret: process.env.CLOUDINARY_SECRET
+});
+
 // ── Configuration multer (upload photos visage) ─────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(__dirname, "../uploads/faces");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `face_${req.user._id}_${Date.now()}${ext}`);
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'Uploads/children_faces',
+    allowed_formats: ['jpg', 'png', 'jpeg'],
   },
 });
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Seules les images sont acceptées"));
-  },
-});
+const upload = multer({ storage });
 
 // ── Helpers : conversion form data → schema ──────────────────────
 function parseFormToChild(body) {
@@ -122,11 +120,39 @@ router.get("/all", protect, adminOnly, async (req, res) => {
 router.post("/", protect, upload.single("facePhoto"), async (req, res) => {
   try {
     const childFields = parseFormToChild(req.body);
-    childFields.userId = req.user._id;
+    console.log(childFields);
 
+    childFields.userId = req.user._id;
+    console.log(req.file.path);
+    childFields.PR_Q3D = childFields.gender === "M" ? 1 : 2;
+    let age = new Date().getFullYear() - new Date(childFields.birthDate).getFullYear();
+    switch (true) {
+      case age < 25:
+        childFields.PR_AGE1 = 1;
+        break;
+      case age < 35:
+        childFields.PR_AGE1 = 2;
+        break;
+      case age < 45:
+        childFields.PR_AGE1 = 3;
+        break;
+      case age < 55:
+        childFields.PR_AGE1 = 4;
+        break;
+      case age >= 65:
+        childFields.PR_AGE1 = 5;
+        break;
+      default:
+        childFields.PR_AGE1 = 5;
+    }
     if (req.file) {
-      childFields.facePhotoPath = req.file.path;
-      childFields.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
+      // Avec Cloudinary, req.file.path est déjà l'URL complète
+      // exemple: https://res.cloudinary.com/votre_cloud/image/upload/v123/folder/image.jpg
+      childFields.facePhotoUrl = req.file.path;
+
+      // Optionnel : vous pouvez garder facePhotoPath pour stocker l'ID public de Cloudinary 
+      // (utile pour supprimer l'image plus tard), il se trouve dans req.file.filename
+      childFields.facePhotoPath = req.file.filename;
     }
 
     const child = await Child.create(childFields);
@@ -184,14 +210,17 @@ router.put("/:id", protect, upload.single("facePhoto"), async (req, res) => {
       ...child.toObject(),
       ...req.body
     });
-    
+
     if (req.file) {
-      // Supprimer ancienne photo si elle existe
-      if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
-        fs.unlinkSync(child.facePhotoPath);
+      // 1. Supprimer l'ancienne photo sur Cloudinary si elle existe
+      // On utilise facePhotoPath car il stocke le 'public_id' (ex: children_faces/xyz123)
+      if (child.facePhotoPath) {
+        await cloudinary.uploader.destroy(child.facePhotoPath);
       }
-      updates.facePhotoPath = req.file.path;
-      updates.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
+
+      // 2. Mettre à jour avec les nouvelles données Cloudinary
+      updates.facePhotoPath = req.file.filename; // Le public_id pour les futures suppressions
+      updates.facePhotoUrl = req.file.path;     // L'URL complète HTTPS
     }
 
     const updated = await Child.findByIdAndUpdate(req.params.id, updates, { new: true });
@@ -210,12 +239,24 @@ router.put("/:id/photo", protect, upload.single("facePhoto"), async (req, res) =
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     if (!req.file) return res.status(400).json({ message: "Aucune photo fournie" });
 
-    if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
-      fs.unlinkSync(child.facePhotoPath);
+    // 1. Suppression de l'ancienne photo sur Cloudinary
+    // On utilise facePhotoPath qui contient le 'public_id' (ex: children_faces/abc123)
+    if (child.facePhotoPath) {
+      try {
+        await cloudinary.uploader.destroy(child.facePhotoPath);
+      } catch (err) {
+        console.error("Erreur suppression Cloudinary:", err);
+        // On continue quand même pour ne pas bloquer l'utilisateur 
+        // si l'ancienne image a déjà été supprimée manuellement
+      }
     }
 
-    child.facePhotoPath = req.file.path;
-    child.facePhotoUrl = `/uploads/faces/${req.file.filename}`;
+    // 2. Mise à jour avec les nouvelles infos Cloudinary
+    // req.file.path est l'URL complète (https://res.cloudinary.com/...)
+    // req.file.filename est le public_id généré par Cloudinary
+    child.facePhotoPath = req.file.filename;
+    child.facePhotoUrl = req.file.path;
+
     await child.save();
 
     res.json({ facePhotoUrl: child.facePhotoUrl });
@@ -249,8 +290,8 @@ router.delete("/:id", protect, async (req, res) => {
     const child = await Child.findOneAndDelete({ _id: req.params.id });
     if (!child) return res.status(404).json({ message: "Enfant non trouvé" });
     // Supprimer la photo de visage si elle existe
-    if (child.facePhotoPath && fs.existsSync(child.facePhotoPath)) {
-      fs.unlinkSync(child.facePhotoPath);
+    if (child.facePhotoPath) {
+      await cloudinary.uploader.destroy(child.facePhotoPath);
     }
     res.json({ message: "Enfant supprimé" });
   } catch (err) {
@@ -263,6 +304,7 @@ router.delete("/:id", protect, async (req, res) => {
 async function triggerPrediction(childId) {
   const child = await Child.findById(childId);
   if (!child) throw new Error("Enfant non trouvé");
+  console.log(child);
 
   // ── Appel 1 : Prédiction TSA (ML + CNN) ──────────────────────
   const tsaFeatures = [
@@ -271,6 +313,8 @@ async function triggerPrediction(childId) {
     child.A7 ?? 0, child.A8 ?? 0, child.A9 ?? 0, child.A10 ?? 0, new Date().getFullYear() - child.birthDate.getFullYear() ?? 0, child.gender ?? "m",
     child.jaundice ?? 0, child.familyMemWithASD ?? 0,
   ];
+  console.log(tsaFeatures);
+
   const rmFeatures = [
     child.PR_AGE1, child.PR_Q3D,
     child.PR_QF1A, child.PR_QG1A,
@@ -287,6 +331,8 @@ async function triggerPrediction(childId) {
     child.PR_QO1_D_COMBINE,
     child.PR_QO1_E_COMBINE,
   ];
+  console.log(rmFeatures);
+
   let result = {};
   try {
     const FormData = require("form-data");
@@ -297,12 +343,13 @@ async function triggerPrediction(childId) {
     fd.append("features_rm", JSON.stringify(rmFeatures));
 
     // ✅ IMPORTANT : nom EXACT "image"
-    fd.append("image", fs.createReadStream(child.facePhotoPath));
+    fd.append("image_url", child.facePhotoUrl);
 
     const res = await axios.post(`${PYTHON_API}/predict`, fd, {
       headers: fd.getHeaders(), // 🔥 obligatoire
     });
     result = res.data; // { prob_ml, prob_snn, prob_final, prediction }
+    console.log("Résultat prédiction:", result);
   } catch (e) {
     console.warn("Prédiction TSA échouée:", e.message);
   }
